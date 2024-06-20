@@ -1,0 +1,153 @@
+#!/bin/bash
+
+while true
+do
+
+# Logo
+
+echo "========================================================================================================================"
+curl -s https://raw.githubusercontent.com/StakeTake/script/main/logo.sh | bash
+echo "========================================================================================================================"
+
+# Menu
+
+PS3='Select an action: '
+options=(
+"Install Node"
+"Check Log"
+"Check balance"
+"Request tokens in discord"
+"Create Validator"
+"Exit")
+select opt in "${options[@]}"
+do
+case $opt in
+
+"Install Node")
+echo "============================================================"
+echo "Install start"
+echo "============================================================"
+echo "Setup NodeName:"
+echo "============================================================"
+read NODENAME
+echo "============================================================"
+echo "Setup WalletName:"
+echo "============================================================"
+read WALLETNAME
+echo export NODENAME=${NODENAME} >> $HOME/.bash_profile
+echo export WALLETNAME=${WALLETNAME} >> $HOME/.bash_profile
+echo export CHAIN_ID=kyve-beta >> $HOME/.bash_profile
+source ~/.bash_profile
+
+#UPDATE APT
+sudo apt update && sudo apt upgrade -y
+sudo apt install curl tar wget clang pkg-config libssl-dev jq build-essential bsdmainutils git make ncdu gcc git jq chrony liblz4-tool -y
+
+#INSTALL GO
+wget https://golang.org/dl/go1.18.3.linux-amd64.tar.gz; \
+rm -rv /usr/local/go; \
+tar -C /usr/local -xzf go1.18.3.linux-amd64.tar.gz && \
+rm -v go1.18.3.linux-amd64.tar.gz && \
+echo "export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin" >> ~/.bash_profile && \
+source ~/.bash_profile && \
+go version
+
+#INSTALL
+cd $HOME
+wget https://nc2.breithecker.de/s/BY4Lzj8TAQzgJZm/download/chain_linux_amd64.tar.gz
+tar -xvzf chain_linux_amd64.tar.gz
+mkdir -p $HOME/go/bin
+mv chaind $HOME/go/bin/
+chmod +x $HOME/go/bin/chaind
+
+chaind init $NODENAME --chain-id $CHAIN_ID
+chaind config chain-id kyve-beta
+wget -O $HOME/.kyve/config/genesis.json "https://nc2.breithecker.de/s/z3bDsQk8D6snyWA/download/genesis-v0.7.0-beta.json"
+wget -O $HOME/.kyve/config/addrbook.json "https://raw.githubusercontent.com/StakeTake/guidecosmos/main/KYVE/kyve-beta/addrbook.json"
+go install github.com/cosmos/cosmos-sdk/cosmovisor/cmd/cosmovisor@v1.0.0
+mkdir -p $HOME/.kyve/cosmovisor/genesis/bin
+mkdir $HOME/.kyve/cosmovisor/upgrades
+cp $(which chaind) $HOME/.kyve/cosmovisor/genesis/bin/
+
+seeds=""
+peers="410bf0cb2cdb9a6e159c14b9d01531b9ecb1edd4@3.70.26.46:26656"
+sed -i.bak -e "s/^seeds *=.*/seeds = \"$seeds\"/; s/^persistent_peers *=.*/persistent_peers = \"$peers\"/" ~/.kyve/config/config.toml
+
+echo "============================================================"
+echo "Be sure to write down the mnemonic!"
+echo "============================================================"
+#WALLET
+kyved keys add $WALLETNAME
+
+
+chaind tendermint unsafe-reset-all --home $HOME/.kyve
+
+sudo tee /etc/systemd/system/kyved.service > /dev/null <<EOF  
+[Unit]
+Description=cosmovisor
+After=network-online.target
+[Service]
+User=$USER
+ExecStart=$(which cosmovisor) start
+Restart=on-failure
+RestartSec=12
+LimitNOFILE=65535
+Environment="DAEMON_HOME=$HOME/.kyve"
+Environment="DAEMON_NAME=chaind"
+Environment="DAEMON_ALLOW_DOWNLOAD_BINARIES=true"
+Environment="DAEMON_RESTART_AFTER_UPGRADE=true"
+Environment="UNSAFE_SKIP_BACKUP=true"
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl enable kyved
+sudo systemctl daemon-reload
+sudo systemctl restart kyved
+
+break
+;;
+
+"Check Log")
+
+journalctl -u kyved -f -o cat
+
+break
+;;
+
+
+"Check balance")
+chaind q bank balances $(chaind keys show $WALLETNAME -a --bech acc)
+break
+;;
+
+"Create Validator")
+chaind tx staking create-validator --yes \
+ --amount 19000000000tkyve \
+ --moniker $NODENAME \
+ --commission-rate "0.10" \
+ --commission-max-rate "0.20" \
+ --commission-max-change-rate "0.01" \
+ --min-self-delegation "1" \
+ --pubkey "$(chaind tendermint show-validator)" \
+ --from $WALLETNAME \
+ --chain-id $CHAIN_ID
+break
+;;
+
+"Request tokens in discord")
+echo "========================================================================================================================"
+echo "In order to receive tokens, you need to go to the Discord server
+and request tokens in the faucet channel in the format !faucet send <your_kyve_address>"
+echo "========================================================================================================================"
+
+break
+;;
+
+"Exit")
+exit
+;;
+*) echo "invalid option $REPLY";;
+esac
+done
+done

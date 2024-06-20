@@ -1,0 +1,172 @@
+#!/bin/bash
+
+while true
+do
+
+# Logo
+
+echo "========================================================================================================================"
+curl -s https://raw.githubusercontent.com/StakeTake/script/main/logo.sh | bash
+echo "========================================================================================================================"
+
+# Menu
+
+PS3='Select an action: '
+options=(
+"Install Node"
+"Check Log"
+"Check balance"
+"Request tokens in discord"
+"Create Validator"
+"Exit")
+select opt in "${options[@]}"
+do
+case $opt in
+
+"Install Node")
+echo "============================================================"
+echo "Install start"
+echo "============================================================"
+echo "Setup NodeName:"
+echo "============================================================"
+read NODENAME
+echo "============================================================"
+echo "Setup WalletName:"
+echo "============================================================"
+read WALLETNAME
+echo export NODENAME=${NODENAME} >> $HOME/.bash_profile
+echo export WALLETNAME=${WALLETNAME} >> $HOME/.bash_profile
+echo export CHAIN_ID=morocco-1 >> $HOME/.bash_profile
+source ~/.bash_profile
+
+#UPDATE APT
+sudo apt update && sudo apt upgrade -y
+sudo apt install gcc curl tar wget clang pkg-config libssl-dev jq build-essential bsdmainutils git make ncdu gcc git jq chrony liblz4-tool -y
+
+
+#INSTALL GO
+wget https://golang.org/dl/go1.18.3.linux-amd64.tar.gz; \
+rm -rv /usr/local/go; \
+tar -C /usr/local -xzf go1.18.3.linux-amd64.tar.gz && \
+rm -v go1.18.3.linux-amd64.tar.gz && \
+echo "export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin" >> ~/.bash_profile && \
+source ~/.bash_profile && \
+go version
+
+#INSTALL
+git clone https://github.com/ChronicNetwork/cht.git
+cd cht && git fetch --tags
+git checkout v1.1.0
+make build && make install
+
+chtd init $NODENAME --chain-id $CHAIN_ID
+
+echo "============================================================"
+echo "Be sure to write down the mnemonic!"
+echo "============================================================"
+#WALLET
+chtd keys add $WALLETNAME
+
+chtd tendermint unsafe-reset-all --home $HOME/.cht
+rm $HOME/.cht/config/genesis.json
+wget -O $HOME/.cht/config/genesis.json https://raw.githubusercontent.com/ChronicNetwork/net/main/mainnet/v1.1/genesis.json
+
+external_address=$(wget -qO- eth0.me)
+peers="89e84cd96a91ff24ec0ae60bfdd46588768432c7@159.203.28.90:26656,4e9a1be76e5f2bf6c34748b85aed0cedca892cc8@143.244.182.230:26656,998340bc75690a0479fa028f5bdf275b829b9f1a@65.21.132.226:28656,31cc2cd1735ff7b51bb44dada4d984741208fc39@65.21.88.252:29656"
+sed -i.bak -e "s/^external_address *=.*/external_address = \"$external_address:26656\"/; s/^persistent_peers *=.*/persistent_peers = \"$peers\"/" $HOME/.cht/config/config.toml
+SEEDS="3f764ecb2f5f9fb6c8922c6ad2fbe1ac44310737@147.182.180.205:26656"
+sed -i -e "/seeds =/ s/= .*/= \"$SEEDS\"/"  $HOME/.cht/config/config.toml
+# config pruning
+pruning="custom"
+pruning_keep_recent="100"
+pruning_keep_every="0"
+pruning_interval="10"
+
+sed -i -e "s/^pruning *=.*/pruning = \"$pruning\"/" $HOME/.cht/config/app.toml
+sed -i -e "s/^pruning-keep-recent *=.*/pruning-keep-recent = \"$pruning_keep_recent\"/" $HOME/.cht/config/app.toml
+sed -i -e "s/^pruning-keep-every *=.*/pruning-keep-every = \"$pruning_keep_every\"/" $HOME/.cht/config/app.toml
+sed -i -e "s/^pruning-interval *=.*/pruning-interval = \"$pruning_interval\"/" $HOME/.cht/config/app.toml
+
+
+tee $HOME/chtd.service > /dev/null <<EOF
+[Unit]
+Description=CHTD
+After=network.target
+[Service]
+Type=simple
+User=$USER
+ExecStart=$(which chtd) start
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65535
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo mv $HOME/chtd.service /etc/systemd/system/
+
+#STATE-SYNC
+SNAP_RPC=http://144.76.224.246:46657
+LATEST_HEIGHT=$(curl -s $SNAP_RPC/block | jq -r .result.block.header.height);
+BLOCK_HEIGHT=$((LATEST_HEIGHT - 1000));
+TRUST_HASH=$(curl -s "$SNAP_RPC/block?height=$BLOCK_HEIGHT" | jq -r .result.block_id.hash)
+echo $LATEST_HEIGHT $BLOCK_HEIGHT $TRUST_HASH
+sed -i.bak -E "s|^(enable[[:space:]]+=[[:space:]]+).$|\1true| ;
+s|^(rpc_servers[[:space:]]+=[[:space:]]+).$|\1"$SNAP_RPC,$SNAP_RPC"| ;
+s|^(trust_height[[:space:]]+=[[:space:]]+).$|\1$BLOCK_HEIGHT| ;
+s|^(trust_hash[[:space:]]+=[[:space:]]+).$|\1"$TRUST_HASH"| ;
+s|^(seeds[[:space:]]+=[[:space:]]+).*$|\1""|" $HOME/.cht/config/config.toml
+
+# start service
+sudo systemctl daemon-reload
+sudo systemctl enable chtd
+sudo systemctl restart chtd
+
+break
+;;
+
+"Check Log")
+
+journalctl -u chtd -f -o cat
+
+break
+;;
+
+
+"Check balance")
+chtd q bank balances $(chtd keys show $WALLETNAME -a --bech acc)
+break
+;;
+
+"Create Validator")
+chtd tx staking create-validator \
+  --amount 1000000ucht \
+  --from $WALLETNAME \
+  --commission-max-change-rate "0.05" \
+  --commission-max-rate "0.20" \
+  --commission-rate "0.05" \
+  --min-self-delegation "1" \
+  --pubkey $(chtd tendermint show-validator) \
+  --moniker $NODENAME \
+  --chain-id $CHAIN_ID \
+  --gas 200000 \
+  -y
+break
+;;
+
+"Request tokens in discord")
+echo "========================================================================================================================"
+echo "In order to receive tokens, you need to go to the Discord server
+and request tokens in the validator channel"
+echo "========================================================================================================================"
+
+break
+;;
+
+"Exit")
+exit
+;;
+*) echo "invalid option $REPLY";;
+esac
+done
+done
